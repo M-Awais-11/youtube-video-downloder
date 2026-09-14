@@ -498,7 +498,10 @@ class MainWindow:
         def on_save(theme_changed: bool):
             if theme_changed:
                 self.apply_theme_update()
-            # Update save path display
-            self.dest_var.set(config.get("download_dir"))
+            # Update save path display in both Single and Batch tabs
+            new_dest = config.get("download_dir")
+            self.dest_var.set(new_dest)
+            if hasattr(self, "tab_batch") and hasattr(self.tab_batch, "dest_var"):
+                self.tab_batch.dest_var.set(new_dest)
 
         SettingsDialog(self.root, on_save_callback=on_save)

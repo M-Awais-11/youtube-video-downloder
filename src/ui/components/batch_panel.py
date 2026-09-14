@@ -1,25 +1,32 @@
 """
-Batch and Playlist download manager with queue table.
+Batch and Playlist download manager with dedicated format, bitrate, and path options.
 """
+import os
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import threading
 from typing import List, Dict, Any, Optional
 
 from ...core.downloader import DownloadEngine
 from ...core.metadata import MetadataExtractor
 from ...core.utils import is_playlist_url
-from ...config import config
+from ...config import (
+    config,
+    VIDEO_QUALITIES,
+    VIDEO_FORMATS,
+    AUDIO_FORMATS,
+    AUDIO_BITRATES
+)
 from ..theme import get_theme_colors
 from ..notifier import notifier
 
 
 class BatchPanel(ttk.Frame):
-    """Panel for batch URL downloads and playlist processing."""
+    """Panel for batch URL downloads and playlist processing with dedicated options."""
 
-    def __init__(self, parent, get_download_options_callback, **kwargs):
+    def __init__(self, parent, get_download_options_callback=None, **kwargs):
         super().__init__(parent, style="TFrame", **kwargs)
-        self.get_download_options = get_download_options_callback
+        self.get_fallback_options = get_download_options_callback
 
         self.queue: List[Dict[str, Any]] = []
         self._is_processing = False
@@ -31,7 +38,9 @@ class BatchPanel(ttk.Frame):
     def _build_ui(self):
         c = get_theme_colors()
 
-        # Input card
+        # -------------------------------------------------------------
+        # 1. Input & Options Card
+        # -------------------------------------------------------------
         self.input_card = ttk.Frame(self, style="Card.TFrame")
         self.input_card.pack(fill="x", padx=12, pady=(10, 6))
 
@@ -41,14 +50,14 @@ class BatchPanel(ttk.Frame):
         tk.Label(
             self.input_inner,
             text="Enter YouTube URLs (one per line) or a Playlist link:",
-            font=("Segoe UI", 10, "bold"),
+            font=("Segoe UI", 9, "bold"),
             fg=c["fg"],
             bg=c["card_bg"]
-        ).pack(anchor="w", pady=(0, 5))
+        ).pack(anchor="w", pady=(0, 4))
 
         self.url_text = tk.Text(
             self.input_inner,
-            height=4,
+            height=3,
             font=("Segoe UI", 9),
             bg=c["entry_bg"],
             fg=c["entry_fg"],
@@ -59,7 +68,110 @@ class BatchPanel(ttk.Frame):
         )
         self.url_text.pack(fill="x", pady=(0, 8))
 
-        # Button row for Queue
+        # --- Batch Options Box (Type, Quality, Format, Save Path) ---
+        self.options_box = tk.Frame(self.input_inner, bg=c["card_bg"])
+        self.options_box.pack(fill="x", pady=(0, 8))
+
+        # Row 1: Download Type + Quality + Format
+        row1 = tk.Frame(self.options_box, bg=c["card_bg"])
+        row1.pack(fill="x", pady=(0, 6))
+
+        tk.Label(
+            row1,
+            text="Format Type:",
+            font=("Segoe UI", 9, "bold"),
+            fg=c["fg"],
+            bg=c["card_bg"]
+        ).pack(side="left", padx=(0, 8))
+
+        self.type_var = tk.StringVar(value=config.get("default_type", "video"))
+        self.rb_vid = ttk.Radiobutton(
+            row1,
+            text="🎬 Video",
+            variable=self.type_var,
+            value="video",
+            command=self._on_type_changed
+        )
+        self.rb_vid.pack(side="left", padx=(0, 12))
+
+        self.rb_aud = ttk.Radiobutton(
+            row1,
+            text="🎵 Audio Only (MP3)",
+            variable=self.type_var,
+            value="audio",
+            command=self._on_type_changed
+        )
+        self.rb_aud.pack(side="left", padx=(0, 20))
+
+        # Quality / Bitrate
+        self.lbl_quality = tk.Label(
+            row1,
+            text="Resolution:",
+            font=("Segoe UI", 9),
+            fg=c["fg"],
+            bg=c["card_bg"]
+        )
+        self.lbl_quality.pack(side="left", padx=(0, 4))
+
+        self.quality_var = tk.StringVar(value=config.get("default_video_quality", "best"))
+        self.quality_combo = ttk.Combobox(
+            row1,
+            textvariable=self.quality_var,
+            values=VIDEO_QUALITIES,
+            state="readonly",
+            width=10
+        )
+        self.quality_combo.pack(side="left", padx=(0, 14))
+
+        # Container / Codec
+        self.lbl_format = tk.Label(
+            row1,
+            text="Format:",
+            font=("Segoe UI", 9),
+            fg=c["fg"],
+            bg=c["card_bg"]
+        )
+        self.lbl_format.pack(side="left", padx=(0, 4))
+
+        self.format_var = tk.StringVar(value=config.get("default_video_format", "mp4"))
+        self.format_combo = ttk.Combobox(
+            row1,
+            textvariable=self.format_var,
+            values=VIDEO_FORMATS,
+            state="readonly",
+            width=8
+        )
+        self.format_combo.pack(side="left")
+
+        # Row 2: Save Destination Path
+        row2 = tk.Frame(self.options_box, bg=c["card_bg"])
+        row2.pack(fill="x", pady=(0, 8))
+
+        tk.Label(
+            row2,
+            text="Save To:",
+            font=("Segoe UI", 9, "bold"),
+            fg=c["fg"],
+            bg=c["card_bg"]
+        ).pack(side="left", padx=(0, 8))
+
+        self.dest_var = tk.StringVar(value=config.get("download_dir"))
+        self.dest_entry = ttk.Entry(
+            row2,
+            textvariable=self.dest_var,
+            font=("Segoe UI", 9)
+        )
+        self.dest_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        self.btn_browse = ttk.Button(
+            row2,
+            text="Browse...",
+            style="TButton",
+            command=self._browse_dir
+        )
+        self.btn_browse.pack(side="right")
+
+        # Row 3: Action Buttons (Add to Queue / Clear Input)
         self.input_btn_row = tk.Frame(self.input_inner, bg=c["card_bg"])
         self.input_btn_row.pack(fill="x")
 
@@ -79,14 +191,15 @@ class BatchPanel(ttk.Frame):
         )
         self.btn_clear_text.pack(side="left")
 
-        # Queue Card
+        # -------------------------------------------------------------
+        # 2. Queue Card
+        # -------------------------------------------------------------
         self.queue_card = ttk.Frame(self, style="Card.TFrame")
         self.queue_card.pack(fill="both", expand=True, padx=12, pady=6)
 
         self.queue_inner = tk.Frame(self.queue_card, bg=c["card_bg"], padx=12, pady=10)
         self.queue_inner.pack(fill="both", expand=True)
 
-        # Queue header
         self.queue_header = tk.Frame(self.queue_inner, bg=c["card_bg"])
         self.queue_header.pack(fill="x", pady=(0, 6))
 
@@ -108,24 +221,26 @@ class BatchPanel(ttk.Frame):
         self.btn_clear_queue.pack(side="right")
 
         # Treeview table
-        columns = ("id", "title", "type", "quality", "status")
+        columns = ("id", "title", "type", "quality", "format", "status")
         self.tree = ttk.Treeview(
             self.queue_inner,
             columns=columns,
             show="headings",
-            height=7,
+            height=6,
             selectmode="browse"
         )
         self.tree.heading("id", text="#")
         self.tree.heading("title", text="Title / URL")
         self.tree.heading("type", text="Type")
         self.tree.heading("quality", text="Quality")
+        self.tree.heading("format", text="Format")
         self.tree.heading("status", text="Status")
 
         self.tree.column("id", width=35, anchor="center")
-        self.tree.column("title", width=320, anchor="w")
+        self.tree.column("title", width=280, anchor="w")
         self.tree.column("type", width=70, anchor="center")
         self.tree.column("quality", width=70, anchor="center")
+        self.tree.column("format", width=60, anchor="center")
         self.tree.column("status", width=90, anchor="center")
 
         tree_scroll = ttk.Scrollbar(self.queue_inner, orient="vertical", command=self.tree.yview)
@@ -134,7 +249,9 @@ class BatchPanel(ttk.Frame):
         self.tree.pack(side="left", fill="both", expand=True)
         tree_scroll.pack(side="right", fill="y")
 
-        # Batch Controls & Progress
+        # -------------------------------------------------------------
+        # 3. Batch Controls & Progress
+        # -------------------------------------------------------------
         self.control_frame = ttk.Frame(self, style="Card.TFrame")
         self.control_frame.pack(fill="x", padx=12, pady=(6, 12))
 
@@ -175,6 +292,46 @@ class BatchPanel(ttk.Frame):
         )
         self.btn_batch_stop.pack(side="left")
 
+    def _on_type_changed(self):
+        """Updates quality and format choices when switching between Video and Audio in Batch panel."""
+        dtype = self.type_var.get()
+        if dtype == "video":
+            self.lbl_quality.config(text="Resolution:")
+            self.quality_combo.config(values=VIDEO_QUALITIES)
+            self.quality_var.set(config.get("default_video_quality", "best"))
+
+            self.lbl_format.config(text="Format:")
+            self.format_combo.config(values=VIDEO_FORMATS)
+            self.format_var.set(config.get("default_video_format", "mp4"))
+        else:  # audio
+            self.lbl_quality.config(text="Bitrate:")
+            self.quality_combo.config(values=AUDIO_BITRATES)
+            self.quality_var.set(config.get("default_audio_bitrate", "192"))
+
+            self.lbl_format.config(text="Format:")
+            self.format_combo.config(values=AUDIO_FORMATS)
+            self.format_var.set(config.get("default_audio_format", "mp3"))
+
+    def _browse_dir(self):
+        """Opens directory picker to choose custom download folder for batch."""
+        chosen = filedialog.askdirectory(initialdir=self.dest_var.get())
+        if chosen:
+            self.dest_var.set(chosen)
+
+    def get_batch_options(self) -> dict:
+        """Returns the current options specifically selected in this Batch Panel."""
+        dtype = self.type_var.get()
+        val = self.quality_var.get()
+        save_p = self.dest_var.get().strip() or str(config.get("download_dir"))
+        return {
+            "download_type": dtype,
+            "video_quality": val if dtype == "video" else "best",
+            "video_format": self.format_var.get() if dtype == "video" else "mp4",
+            "audio_format": self.format_var.get() if dtype == "audio" else "mp3",
+            "audio_bitrate": val if dtype == "audio" else "192",
+            "save_path": save_p,
+        }
+
     def _handle_add_urls(self):
         content = self.url_text.get("1.0", tk.END).strip()
         if not content:
@@ -184,11 +341,11 @@ class BatchPanel(ttk.Frame):
         if not lines:
             return
 
-        opts = self.get_download_options()
+        opts = self.get_batch_options()
+
         # Check if any URL is a playlist
         for url in lines:
             if is_playlist_url(url):
-                # Ask user if they want to expand playlist
                 self.btn_add.config(state="disabled", text="Expanding Playlist...")
                 threading.Thread(
                     target=self._expand_playlist_and_add,
@@ -215,6 +372,7 @@ class BatchPanel(ttk.Frame):
 
     def _add_item_to_queue(self, url: str, title: str, opts: dict):
         item_id = len(self.queue) + 1
+        item_format = opts["video_format"] if opts["download_type"] == "video" else opts["audio_format"]
         item = {
             "id": item_id,
             "url": url,
@@ -233,6 +391,7 @@ class BatchPanel(ttk.Frame):
             title,
             item["type"].upper(),
             item["quality"],
+            item_format.upper(),
             item["status"]
         ))
         self.queue_title.config(text=f"Download Queue ({len(self.queue)} items)")
@@ -281,6 +440,9 @@ class BatchPanel(ttk.Frame):
                 break
             if item["status"] == "Completed":
                 continue
+
+            # Ensure destination directory exists
+            os.makedirs(item["save_path"], exist_ok=True)
 
             # Update UI to Downloading
             item_id_str = str(item["id"])
@@ -357,6 +519,14 @@ class BatchPanel(ttk.Frame):
         """Refreshes styling when the theme changes."""
         c = get_theme_colors()
         self.input_inner.configure(bg=c["card_bg"])
+        self.options_box.configure(bg=c["card_bg"])
+        for child in self.options_box.winfo_children():
+            if isinstance(child, tk.Frame):
+                child.configure(bg=c["card_bg"])
+                for sub in child.winfo_children():
+                    if isinstance(sub, tk.Label):
+                        sub.configure(bg=c["card_bg"], fg=c["fg"])
+
         self.input_btn_row.configure(bg=c["card_bg"])
         self.queue_inner.configure(bg=c["card_bg"])
         self.queue_header.configure(bg=c["card_bg"])
