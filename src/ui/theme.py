@@ -6,7 +6,6 @@ import tkinter as tk
 
 THEMES = {
     "dark": {
-        
         "bg": "#181825",
         "card_bg": "#1e1e2e",
         "surface": "#24273a",
@@ -25,6 +24,7 @@ THEMES = {
         "entry_fg": "#cdd6f4",
         "select_bg": "#313244",
         "progress_trough": "#24273a",
+        
     },
     "light": {
         "bg": "#f4f6f9",
